@@ -553,7 +553,9 @@
     const zt = Math.min(1, Math.max(0, aliveT(now) / ALIVE_S));
     // исчезание (vanish): камера чуть наезжает, перо стирает сеть в обратном порядке, звёзды и свечение гаснут
     const vk = vanishAt ? Math.min(1, Math.max(0, (now - vanishAt) / vanishMs)) : 0;
-    fadeK = vk;
+    // схлопывание в точку (implode): воронка — сеть всё быстрее крутится и стягивается к ядру
+    const ki = implodeAt ? Math.min(1, Math.max(0, (now - implodeAt) / implodeMs)) : 0;
+    fadeK = Math.max(vk, ki);
     const zoom = (reduce() ? 1 : 1 + ZOOM_IN * Math.pow(1 - zt, 3)) * (1 + 0.18 * ease(vk));
     const live = liveAt(now);
     const sq = squeeze ? Math.max(0, (now - squeeze.start) / squeeze.dur) : 1;
@@ -566,7 +568,7 @@
     const leanOn = grab && grab.active && !grab.releasedAt;
     lean.x += ((leanOn ? (gpx - w / 2) * 0.06 : 0) - lean.x) * 0.12;
     lean.y += ((leanOn ? (gpy - h * 0.46) * 0.06 : 0) - lean.y) * 0.12;
-    const cx = w / 2 + lean.x, cy = h * 0.46 + lean.y, R = Math.min(w, h * 0.92) * 0.36 * zoom * (1 - shrinkK);
+    const cx = w / 2 + lean.x, cy = h * 0.46 + lean.y, R = Math.min(w, h * 0.92) * 0.36 * zoom * (1 - shrinkK) * (1 - ki * ki * ki);
     // волны от ядра: фронт в единицах модели (0 — ядро, ~1.1 — край)
     waves = waves.filter((wv) => now - wv.start < WAVE_MS);
     const fronts = waves.map((wv) => [Math.max(0, now - wv.start) / WAVE_MS * 1.35, wv.str]);
@@ -897,7 +899,7 @@
     }
     // мягкое свечение за ядром (CSS-фон)
     setGlow(cx, cy, R * 0.9 * (0.9 + 0.1 * mood.core), ar, ag, ab,
-      0.16 * ease(assemble) * mood.core * (1 + 0.2 * Math.sin(time * 3.2) * Math.max(0, mood.core - 1.2)) * dim, dpr);
+      0.16 * ease(assemble) * mood.core * (1 + 0.2 * Math.sin(time * 3.2) * Math.max(0, mood.core - 1.2)) * dim * (1 - ki), dpr);
     // клетки: ближнее светлее (к белому), дальнее тусклее; импульсы — почти белые
     // кружок клетки — тоже целый и стоит ровно на пиксельной сетке: каждый закрашивает одинаковый сплошной блок
     const dot = Math.max(1, Math.round(cell * 0.72)), dotHot = Math.max(dot + 1, Math.round(dot * 1.35));
@@ -906,6 +908,7 @@
     // ореолы под искрами и сработавшими синапсами (рисуются первыми — головки остаются чёткими поверх)
     for (const hl of halos) emit(hl[0], hl[1], hl[2], AR + (1 - AR) * 0.6, AG + (1 - AG) * 0.6, AB + (1 - AB) * 0.6, 0.22 * hl[3], 2);
     halos = [];
+    if (ki >= 1) G.n = 0;                                                 // стянулась в точку — дальше только точка и кольцо
     for (let i = 0; i < G.n; i++) {
       const k = G.used[i], v = G.v[k], depth = G.d[k];
       const near = Math.min(1, Math.max(0, 0.5 - depth * 0.55));         // 0 — далеко, 1 — близко
@@ -925,8 +928,9 @@
 
     // фраза из точек: ядро → буквы → ядро. Шаг и кружки — как у сети (CELL, dot), штрих в одну точку;
     // яркие; символы вылетают по очереди, втягивается всё разом.
+    if (say && implodeAt && now - implodeAt >= implodeMs) say = null;     // засосало в точку — фразы больше нет
     if (say) {
-      const k = now - say.start, back = say.outEnd + SAY_HOLD, size = dot;
+      const k = now - say.start, back = say.outEnd + (say.hold ?? SAY_HOLD), size = dot;
       const AR2 = AR + (1 - AR) * 0.85, AG2 = AG + (1 - AG) * 0.85, AB2 = AB + (1 - AB) * 0.85;
       for (const d of say.dots) {
         let f;
@@ -934,11 +938,32 @@
         else { const t = Math.min(1, Math.max(0, (k - back - d.d1) / SAY_IN)); f = 1 - t * t; }   // обратно — с разгоном, «засасывает»
         if (f <= 0) continue;
         const tx = d.x * dpr, ty = d.y * dpr;
-        const x = cx + (tx - cx) * f, y = cy + (ty - cy) * f - Math.sin(Math.PI * f) * d.arc * dpr;
+        let x = cx + (tx - cx) * f, y = cy + (ty - cy) * f - Math.sin(Math.PI * f) * d.arc * dpr;
+        if (implodeAt) {                                                  // воронка: буквы засасываются в ядро
+          const g = Math.min(1, Math.max(0, (now - implodeAt - d.d1 * 0.5) / (implodeMs * 0.75)));
+          const e = g * g;
+          x = cx + (x - cx) * (1 - e); y = cy + (y - cy) * (1 - e);
+        }
         const sz = f > 0.97 ? size : dotHot;                              // на пиксельной сетке, как клетки сети
         emit(Math.round(x - sz / 2) + sz / 2, Math.round(y - sz / 2) + sz / 2, sz, AR2, AG2, AB2, f > 0.97 ? 1 : 0.85, 0);
       }
       if (k > back + SAY_IN_MAX) { say = null; react('accepted'); }
+    }
+
+    // после схлопывания: одна яркая точка пульсирует и расходится кольцом из точек, затем пусто
+    if (implodeAt) {
+      const kp = now - implodeAt - implodeMs;
+      if (kp >= 0 && kp < IMPLODE_END) {
+        const f = kp / IMPLODE_END, W2 = (1 - AR) * 0.95;
+        const pulse = 1 + 0.9 * Math.abs(Math.sin(f * Math.PI * 2.2)) * (1 - f);
+        emit(cx, cy, cell * 2.6 * pulse, 1, 1, 1, 0.35 * (1 - f), 2);                       // ореол
+        emit(Math.round(cx), Math.round(cy), dotHot * pulse, AR + W2, AG + (1 - AG) * 0.95, AB + (1 - AB) * 0.95, 1 - f * f, 0);
+        const rr = (1 - Math.pow(1 - Math.min(1, f / 0.7), 3)) * Math.min(w, h) * 0.22, n = 56;
+        if (f < 0.7) for (let j = 0; j < n; j++) {                                          // кольцо из точек
+          const a = j / n * 6.2832;
+          emit(Math.round(cx + Math.cos(a) * rr), Math.round(cy + Math.sin(a) * rr), dot, AR + W2 * 0.6, AG + (1 - AG) * 0.57, AB + (1 - AB) * 0.57, 1 - f / 0.7, 0);
+        }
+      }
     }
 
     flush(w, h);
@@ -977,7 +1002,8 @@
     const poke = reduce() || pk < 0 || pk > 1 ? 0 : 3 * Math.sin(Math.PI * pk);
     // вздрог/«Стоп»: вращение на время замирает
     const frozen = squeeze && squeeze.freeze && now - squeeze.start < squeeze.freeze ? 0 : 1;
-    angle += SPIN * dt * (liveAt(now) * mood.spin * (1 - 0.8 * sleep) * frozen + kick + poke);
+    const kiSpin = implodeAt ? Math.min(1, Math.max(0, (now - implodeAt) / implodeMs)) : 0;
+    angle += SPIN * dt * (liveAt(now) * mood.spin * (1 - 0.8 * sleep) * frozen + kick + poke + 60 * kiSpin * kiSpin);   // воронка разгоняется
     if (now - colorAt > 250) { readColor(); colorAt = now; }   // палитра перетекает (авто-акцент) — цвет следует за ней
     render(now);
   }
@@ -1005,10 +1031,15 @@
   // Исчезание — зеркально появлению: перо стирает линии в обратном порядке, вершины тают, звёзды и свечение гаснут.
   let vanishAt = 0, vanishMs = 1700, fadeK = 0;
   function vanish(ms = 1700) { if (canvas) { vanishMs = ms; vanishAt = performance.now(); } }
+  // Стянуться в одну точку: сеть закручивается воронкой и сжимается к ядру, точки фразы засасываются туда же,
+  // потом точка коротко пульсирует и расходится кольцом из точек (IMPLODE_END мс после схлопывания).
+  let implodeAt = 0, implodeMs = 1500;
+  const IMPLODE_END = 900;
+  function implode(ms = 1500) { if (canvas) { implodeMs = ms; implodeAt = performance.now(); } }
 
   function play() {
     if (!canvas) return;
-    vanishAt = 0; fadeK = 0;
+    vanishAt = 0; fadeK = 0; implodeAt = 0;
     startAt = performance.now();
     cancelAnimationFrame(raf);
     if (reduce()) { readColor(); render(startAt + ASSEMBLE_MS); return; }   // меньше движения — один кадр
@@ -1157,12 +1188,13 @@
   })();
   const DOT_GAP = 1, DOT_SPACE = 3, DOT_LINE = 11;               // в клетках: между буквами, пробел, шаг строк
   // Фраза точками под мозгом. false — не показать (нет холста / меньше движения): панель покажет текстом.
-  function sayText(text) {
+  function sayText(text, opts) {
     if (!canvas || reduce() || !model) return false;
     const { w, h, dpr } = layout();
     const cssW = w / dpr, cssH = h / dpr;
     const P = Math.max(2, Math.round(CELL * dpr)) / dpr;          // шаг — тот же целый шаг сетки, что у сети в render (CSS px)
-    const glyph = (ch) => DOT_FONT[ch] || DOT_FONT[ch.toUpperCase()] || null;
+    const LOOK = { A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х' };   // латиница той же формы
+    const glyph = (ch) => DOT_FONT[ch] || DOT_FONT[ch.toUpperCase()] || DOT_FONT[LOOK[ch.toUpperCase()]] || null;
     const width = (word) => [...word].reduce((n, ch, i) => n + (glyph(ch)?.w ?? DOT_SPACE) + (i ? DOT_GAP : 0), 0);
     // перенос по словам под ширину холста (в клетках)
     const maxW = Math.floor((cssW - 28) / P), lines = [];
@@ -1190,7 +1222,7 @@
       order++;                                                   // перенос строки — как пробел
     });
     if (!dots.length) return false;
-    say = { start: performance.now(), dots, outEnd: Math.max(...dots.map((d) => d.d0)) + SAY_OUT };
+    say = { start: performance.now(), dots, outEnd: Math.max(...dots.map((d) => d.d0)) + SAY_OUT, hold: opts && opts.hold };
     activeAt = say.start;
     return true;
   }
@@ -1216,5 +1248,5 @@
   function setCell(px) { CELL = Math.max(1, Number(px) || 2.5); }
   function setDemo(on) { demo = !!on; }
 
-  window.CrawlerArt = { init, play, redraw, flow, react, reach, suck, unsuck, send, take, say: sayText, vanish, glow: () => lastGlow, setCell, setDemo };
+  window.CrawlerArt = { init, play, redraw, flow, react, reach, suck, unsuck, send, take, say: sayText, vanish, implode, glow: () => lastGlow, setCell, setDemo };
 })();

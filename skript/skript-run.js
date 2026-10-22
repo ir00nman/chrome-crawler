@@ -217,6 +217,7 @@ const SkriptRun = (() => {
     const y0 = await pageScrollY(st.tabId);
     const reader = startGoalReader(st.tabId, d.goal);
     const item = { title: d.title, description: d.description, code: d.code, permissions: d.permissions.slice(), origin, goal: d.goal,
+      markSaved: ((list) => (sid, code) => list && list.markSaved(d.id, sid, code))(drafts),   // свои черновики: к сохранению задача могла смениться
       savedId: d.savedId || null, version: d.version, changed: !!d.savedId && d.code !== d.adoptedCode };
     deps.onScript?.(true);                                           // скрипт работает — панель убирает щупальца со страницы
     const runP = run.run({ code: d.code, args: args || {}, approved: true, permissions: perms, expectedOrigin: origin, savedKeys: savedKeys() });
@@ -229,10 +230,20 @@ const SkriptRun = (() => {
         if (Date.now() - t0 >= VERDICT_MS && run.actions > 0) { clearInterval(timer); removeAsk = c.verdict(() => resolve('yes'), () => resolve('no')); }
       }, 250);
     });
-    const first = await Promise.race([runP.then((s) => ({ s })), answer.then((a) => ({ a }))]);
+    const release = () => { if (signal) signal.removeEventListener('abort', onAbort); };
+    let first;
+    try { first = await Promise.race([runP.then((s) => ({ s })), answer.then((a) => ({ a }))]); }
+    catch (e) {
+      // раннер отказал в запуске («Скрипт уже запущен» и т. п.): без этого оставались интервал,
+      // кнопки ответа, чтение цели и флаг «скрипт работает» (щупальца не возвращались)
+      clearInterval(timer); removeAsk(); release();
+      reader.stop().catch(() => {});
+      deps.onScript?.(false);
+      c.finish('Не запущен: ' + String(e && e.message || e).slice(0, 160), false);
+      return { text: `The script did not start: ${String(e && e.message || e).slice(0, 200)}` };
+    }
     clearInterval(timer);
     removeAsk();
-    const release = () => { if (signal) signal.removeEventListener('abort', onAbort); };
 
     if (first.a === 'yes') {
       // задача заканчивается, скрипт — нет: доигрывает сам, карточка у поля ввода управляет им
@@ -314,6 +325,7 @@ const SkriptRun = (() => {
       });
     } catch (e) { c.note('Не сохранено: ' + e.message); return; }
     item.savedId = r.skill.id;
+    if (item.markSaved) item.markSaved(r.skill.id, item.code);
     cards.set('saved:' + r.skill.id, c);   // запуск из библиотеки потом найдёт эту же карточку
     item.changed = false;   // библиотека теперь хранит этот код
     if (r.warning) c.note(r.warning);

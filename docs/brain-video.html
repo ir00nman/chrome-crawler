@@ -49,6 +49,9 @@
 <div id="frame"><div id="stage"><canvas id="art"></canvas></div><canvas id="flash" width="1920" height="1080"></canvas></div>
 <div class="bar">
   <label>Цвет <input type="color" id="color" value="#ffffff"></label>
+  <label>Сцена <select id="scene"><option value="tv">Появление и выключение ТВ</option><option value="outro">Аутро: в одну точку</option></select></label>
+  <label>Текст <input type="text" id="text" value="Chrome crawler" style="width:130px;background:#1b1c22;color:#e8e9ee;border:1px solid #2a2c33;border-radius:8px;padding:4px 6px;font:inherit"></label>
+  <label>Пауза до надписи, с <input type="number" id="pause" value="1" min="0" max="10" step="0.25"></label>
   <label>Живёт, с <input type="number" id="hold" value="3" min="0" max="30" step="0.5"></label>
   <button id="play" type="button">▶ Проиграть</button>
   <button id="rec" class="rec" type="button">⏺ Записать</button>
@@ -66,6 +69,10 @@
   const q = new URLSearchParams(location.search);
   if (q.get('color')) $('color').value = '#' + q.get('color').replace('#', '');
   if (q.get('hold')) $('hold').value = q.get('hold');
+  if (q.get('scene')) $('scene').value = q.get('scene');
+  if (q.get('pause')) $('pause').value = q.get('pause');
+  if (q.get('text')) $('text').value = q.get('text');
+  const outro = () => $('scene').value === 'outro';
   const applyColor = () => { const c = $('color').value; document.documentElement.style.setProperty('--acc', c); CrawlerArt.flow(); };
   $('color').addEventListener('input', applyColor);
 
@@ -77,8 +84,15 @@
   // Сценарий: появление (прорисовка ~1,7 с + оживание ~1,1 с) → живёт бодро → выключение ТВ → чёрный хвост.
   const APPEAR = 2900, TV = { squash: 180, shrink: 200, flash: 650 }, TAIL = 400;
   const holdMs = () => Number($('hold').value) * 1000;
-  const offAt = () => APPEAR + holdMs();
-  const total = () => offAt() + TV.squash + TV.shrink + TV.flash + TAIL;
+  // аутро: надпись — после того как мозг собрался и ожил, через «паузу до надписи»; «живёт» — уже после надписи
+  const sayAt = () => APPEAR + Number($('pause').value) * 1000;
+  // время печати надписи — как в art-net: символ каждые 45 мс, вылет точек 480 мс (+ разброс ~40 мс)
+  const typeMs = () => Math.max(0, [...$('text').value.trim()].length - 1) * 45 + 520;
+  const offAt = () => outro() ? sayAt() + typeMs() + holdMs() : APPEAR + holdMs();
+  // аутро: фраза точками из ядра → живёт → воронка в одну точку (IMPLODE) → пульс и кольцо (900 мс) → чёрное
+  const IMPLODE = 1500, IMPLODE_END = 900;
+  const total = () => outro() ? offAt() + IMPLODE + IMPLODE_END + TAIL : offAt() + TV.squash + TV.shrink + TV.flash + TAIL;
+  let said = false, imploded = false;
   let t0 = 0;
   const easeIn = (t) => t * t * t, easeOut = (t) => 1 - Math.pow(1 - t, 3), cl = (t) => Math.max(0, Math.min(1, t));
 
@@ -123,14 +137,18 @@
   function timeline(now) {
     const t = now - t0;
     CrawlerArt.setDemo(t > 1800 && t < offAt());                       // пока живёт — бодро (искры, быстрее вращение)
-    tv = tvAt(t - offAt());
+    if (outro()) {
+      if (!said && t >= sayAt() && $('text').value.trim()) { said = true; CrawlerArt.say($('text').value.trim(), { hold: 600000 }); }
+      if (!imploded && t >= offAt()) { imploded = true; CrawlerArt.implode(IMPLODE); }
+      tv = tvAt(-1);                                                     // без «телевизора»
+    } else tv = tvAt(t - offAt());
     stage.style.transform = `scale(${tv.sx}, ${tv.sy})`;
     stage.style.filter = tv.bright !== 1 ? `brightness(${tv.bright})` : '';
     stage.style.visibility = tv.gone ? 'hidden' : '';
     flash.style.opacity = 1;
     drawFlash(fctx, tv, 1920, 1080);
   }
-  function start() { applyColor(); t0 = performance.now(); CrawlerArt.setDemo(false); CrawlerArt.play(); }
+  function start() { applyColor(); said = imploded = false; t0 = performance.now(); CrawlerArt.setDemo(false); CrawlerArt.play(); }
 
   CrawlerArt.init(art);
   applyColor();

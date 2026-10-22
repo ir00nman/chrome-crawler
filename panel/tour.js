@@ -139,7 +139,17 @@ const Tour = (() => {
   // Кнопка правее дорожек — напрямую: вправо до неё и вверх (тоже с дугой).
   const LINK_MS = 420, LINK_STAGGER = 110, LANE = CELL * 2;   // дорожки — через клетку, чтобы линии не сливались
   const PAD = 50;                                                 // правый отступ карточки с линиями (.tour-card.has-links)
-  let lk = null, lg = null, links = [];
+  let lk = null, lg = null, links = [], routeMemo = null;
+  // Геометрия линий — один раз на шаг (сброс в render: смена шага и размера панели), а не каждый кадр:
+  // на шаге со строками это десятки замеров DOM за кадр. Длины отрезков — тут же.
+  function cachedRoutes() {
+    if (!routeMemo) routeMemo = routes().map((it) => {
+      if (!it) return null;
+      const segs = it.pts.slice(1).map((p, k) => Math.hypot(p.x - it.pts[k].x, p.y - it.pts[k].y));
+      return { pts: it.pts, segs, total: segs.reduce((a, b) => a + b, 0) };
+    });
+    return routeMemo;
+  }
   function routes() {
     const items = links.map((l) => {
       const b = document.querySelector(l.target)?.getBoundingClientRect();
@@ -209,11 +219,11 @@ const Tour = (() => {
     lg.clearRect(0, 0, W, H);
     if (moving || !links.length) return;
     const t0 = frame.start + FLOW_MS, cells = new Map();
-    routes().forEach((it, j) => {
+    cachedRoutes().forEach((it, j) => {
       if (!it) return;
       const grow = reduce() ? 1 : ease((now - t0 - j * LINK_STAGGER) / LINK_MS);
       if (grow <= 0) return;
-      const segs = it.pts.slice(1).map((p, k) => Math.hypot(p.x - it.pts[k].x, p.y - it.pts[k].y)), total = segs.reduce((a, b) => a + b, 0);
+      const { segs, total } = it;
       for (let d = 0; d <= total * grow; d += CELL / 2) {
         let rest = d, k = 0;
         while (k < segs.length - 1 && rest > segs[k]) { rest -= segs[k]; k++; }
@@ -251,7 +261,7 @@ const Tour = (() => {
     card.textContent = '';
     card.append(el('div', 'tour-count', `${i + 1} / ${STEPS.length}`), el('h3', 'tour-title', step.title));
     for (const p of step.text) card.append(el('p', 'tour-text', p));
-    links = [];
+    links = []; routeMemo = null;
     card.classList.toggle('has-links', !!(step.rows && step.rows.length));   // шире правый отступ — место под дорожки
     for (const r of step.rows || []) {
       const p = el('p', 'tour-text tour-row'), w = el('span', 'tour-link', r.word);
@@ -328,7 +338,7 @@ const Tour = (() => {
     document.removeEventListener('keydown', onKey, true);
     const r = root;
     cancelAnimationFrame(raf); raf = 0;
-    root = card = fx = g = lk = lg = null; frame = null; links = [];
+    root = card = fx = g = lk = lg = null; frame = null; links = []; routeMemo = null;
     r.classList.add('out');
     setTimeout(() => r.remove(), 260);
     try { chrome.storage.local.set({ [KEY]: true }); } catch (e) { /* без памяти — покажется ещё раз */ }

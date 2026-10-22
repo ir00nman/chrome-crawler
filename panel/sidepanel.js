@@ -325,13 +325,6 @@ function rgbToHsl(r, g, b) {
   const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
   return { h: h * 60, s, l };
 }
-function parseCssColor(str) {
-  if (!str) return null;
-  const ctx = document.createElement('canvas').getContext('2d');
-  ctx.fillStyle = '#000'; ctx.fillStyle = str; ctx.fillRect(0, 0, 1, 1);
-  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-  return rgbToHsl(r, g, b);
-}
 // ---- цветовая математика ----
 function hslToRgb(h, s, l) {
   h = (((h % 360) + 360) % 360) / 360;
@@ -827,11 +820,26 @@ function ratingReport(r) {
   return [`# Отзыв: ${r.verdict === 'good' ? 'хорошо' : 'плохо'}`, `Когда: ${when}`, `Задача: ${r.task}`, `Страница: ${r.url}`, `Модель: ${r.model}`,
     r.comment ? `Что не так: ${r.comment}` : '', '', '## Ответ', r.answer, '', '## Ход решения', r.steps].filter((x) => x !== '').join('\n');
 }
+// Прочитать ключ → изменить → записать — по очереди на ключ: две операции подряд (две оценки, заметка агента
+// во время правки скила) иначе читают одно состояние, и вторая запись затирает первую.
+// change(value) возвращает, что записать, или undefined — ничего не писать. Ошибка не останавливает очередь.
+const storeQueues = {};
+function updateStored(key, def, change) {
+  const job = (storeQueues[key] || Promise.resolve()).then(async () => {
+    const next = await change((await chrome.storage.local.get({ [key]: def }))[key]);
+    if (next !== undefined) await chrome.storage.local.set({ [key]: next });
+    return next;
+  });
+  storeQueues[key] = job.catch(() => {});
+  return job;
+}
+
 async function saveRating(r) {
-  const { ratings = [] } = await chrome.storage.local.get({ ratings: [] });
-  const i = ratings.findIndex((x) => x.id === r.id);
-  if (i >= 0) ratings[i] = r; else ratings.push(r);
-  await chrome.storage.local.set({ ratings: ratings.slice(-RATINGS_MAX) });
+  await updateStored('ratings', [], (ratings) => {
+    const i = ratings.findIndex((x) => x.id === r.id);
+    if (i >= 0) ratings[i] = r; else ratings.push(r);
+    return ratings.slice(-RATINGS_MAX);
+  });
   updateRatingsButton();
 }
 function addRating(card, answer) {
@@ -1065,10 +1073,13 @@ async function renderNotes() {
       btn.setAttribute('aria-label', 'Удалить');
       btn.innerHTML = '<svg class="ic"><use href="#i-x"/></svg>';
       btn.onclick = async () => {
-        const cur = (await chrome.storage.local.get({ notes: {} })).notes;
-        cur[host] = (cur[host] || []).filter((_, j) => j !== i);
-        if (!cur[host].length) delete cur[host];
-        await chrome.storage.local.set({ notes: cur });
+        await updateStored('notes', {}, (cur) => {
+          const list = cur[host] || [];
+          const k = list[i] === text ? i : list.indexOf(text);   // список мог сдвинуться (агент добавил заметку)
+          if (k >= 0) list.splice(k, 1);
+          if (list.length) cur[host] = list; else delete cur[host];
+          return cur;
+        });
         renderNotes();
       };
       row.append(sp, btn);
@@ -1248,12 +1259,13 @@ async function loadSettings() {
   fillProviderSelect();
   applyProviderUI();
   segSet('toolModeSeg', ['auto', 'native', 'json'].includes(raw.toolMode) ? raw.toolMode : 'auto');
-  segSet('compactSeg', raw.compact);
+  // старые настройки: compact был true/false, у сегмента — auto/on/off (иначе не выбрана ни одна кнопка)
+  segSet('compactSeg', raw.compact === true ? 'on' : raw.compact === false ? 'off' : ['auto', 'on', 'off'].includes(raw.compact) ? raw.compact : 'auto');
   segSet('observeSeg', ['structure', 'image', 'both'].includes(raw.observeMode) ? raw.observeMode :
     raw.shotMode === 'never' ? 'structure' : 'both');
   segSet('riskSeg', raw.riskMode === 'accept' ? 'accept' : 'ask');
   lastRisk = raw.riskMode === 'accept' ? 'accept' : 'ask';
-  segSet('themeSeg', raw.theme);
+  segSet('themeSeg', ['auto', 'light', 'dark'].includes(raw.theme) ? raw.theme : 'auto');
   $('maxSteps').value = raw.maxSteps;
   // миграция: раньше «Авто» был одним из кружков акцента
   const auto = raw.autoPalette === null ? raw.accent === 'auto' : !!raw.autoPalette;
@@ -1278,11 +1290,12 @@ async function getNotes(host) {
   return notes[host] || [];
 }
 async function addNote(host, text) {
-  const { notes } = await chrome.storage.local.get({ notes: {} });
-  const list = notes[host] || [];
-  list.push(clip(text.trim(), 400));
-  notes[host] = list.slice(-20);
-  await chrome.storage.local.set({ notes });
+  await updateStored('notes', {}, (notes) => {
+    const list = notes[host] || [];
+    list.push(clip(text.trim(), 400));
+    notes[host] = list.slice(-20);
+    return notes;
+  });
 }
 
 // Скилы — одобренные пользователем инструкции, отдельно от автоматических заметок.
@@ -1395,19 +1408,21 @@ async function renderSkills() {
       actions.className = 'skill-actions';
       const button = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = label; b.onclick = fn; actions.appendChild(b); };
       button(skill.enabled === false ? 'Включить' : 'Отключить', async () => {
-        const data = (await chrome.storage.local.get({ skills: {} })).skills;
-        const item = data[host]?.find((s) => s.id === skill.id);
-        if (!item) return;
-        item.enabled = item.enabled === false;
-        await chrome.storage.local.set({ skills: data });
-        renderSkills();
+        const done = await updateStored('skills', {}, (data) => {
+          const item = data[host]?.find((s) => s.id === skill.id);
+          if (!item) return undefined;
+          item.enabled = item.enabled === false;
+          return data;
+        });
+        if (done) renderSkills();
       });
       button('Изменить', () => editSkill({ ...skill, host }));
       button('Удалить', async () => {
-        const data = (await chrome.storage.local.get({ skills: {} })).skills;
-        data[host] = (data[host] || []).filter((s) => s.id !== skill.id);
-        if (!data[host].length) delete data[host];
-        await chrome.storage.local.set({ skills: data });
+        await updateStored('skills', {}, (data) => {
+          data[host] = (data[host] || []).filter((s) => s.id !== skill.id);
+          if (!data[host].length) delete data[host];
+          return data;
+        });
         renderSkills();
       });
       card.append(title, source, text, actions);
@@ -1444,18 +1459,23 @@ async function saveSkill() {
     $('skillError').textContent = 'Проверьте домен, путь (начинается с /), название и текст.';
     return;
   }
-  const { skills = {} } = await chrome.storage.local.get({ skills: {} });
-  const list = Array.isArray(skills[host]) ? skills[host] : [];
-  if (!skillEditing?.id && list.length >= SKILL_LIMIT) { $('skillError').textContent = 'Не больше 20 скилов для одного сайта.'; return; }
   const item = { id: skillEditing?.id || crypto.randomUUID(), title: clip(title, 80), path: clip(path, 150),
     text: clip(text, 3000), source: skillEditing?.source || 'manual', enabled: skillEditing?.enabled !== false,
     updated: new Date().toISOString().slice(0, 10) };
-  const i = list.findIndex((s) => s.id === item.id);
-  if (skillEditing?.id && i < 0) { $('skillError').textContent = 'Скил больше не существует. Обновите список.'; return; }
-  if (i < 0) list.push(item); else list[i] = item;
-  skills[host] = list;
-  try { await chrome.storage.local.set({ skills }); }
-  catch (e) { $('skillError').textContent = 'Не удалось сохранить: ' + e.message; return; }
+  let error = '';
+  try {
+    // проверка лимита и запись — в одной операции очереди
+    await updateStored('skills', {}, (skills) => {
+      const list = Array.isArray(skills[host]) ? skills[host] : [];
+      const i = list.findIndex((s) => s.id === item.id);
+      if (!skillEditing?.id && list.length >= SKILL_LIMIT) { error = 'Не больше 20 скилов для одного сайта.'; return undefined; }
+      if (skillEditing?.id && i < 0) { error = 'Скил больше не существует. Обновите список.'; return undefined; }
+      if (i < 0) list.push(item); else list[i] = item;
+      skills[host] = list;
+      return skills;
+    });
+  } catch (e) { error = 'Не удалось сохранить: ' + e.message; }
+  if (error) { $('skillError').textContent = error; return; }
   closeSheet('skillEditor');
   skillEditing = null;
   if (skillReturnSheet) renderSkills();
@@ -1698,11 +1718,16 @@ async function hideSuck(tabId = suckTab) {
   await sleep(50);                                                   // кадр без слоя успевает попасть на экран
 }
 
+// limit от модели → целое 1..100: отрицательное в slice(0, -N) вернуло бы почти весь список
+const clampLimit = (v, def = 30) => Math.max(1, Math.min(100, Math.floor(Number(v)) || def));
+
 // ---------- Наблюдение ----------
 async function capture(st, snap) {
   try {
     await hideSuck(st.tabId);
-    await chrome.tabs.update(st.tabId, { active: true });
+    // окно — у текущей вкладки: новая вкладка (window.open) может открыться в другом окне
+    const shown = await chrome.tabs.update(st.tabId, { active: true });
+    if (shown && shown.windowId != null) st.windowId = shown.windowId;
     const dataUrl = await chrome.tabs.captureVisibleTab(st.windowId, { format: 'jpeg', quality: 70 });
     const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
     // Приводим скриншот к размеру viewport в CSS px: координаты на картинке == координаты на странице
@@ -1825,12 +1850,13 @@ function extractJsonBlock(text) {
   try { return JSON.parse(t.slice(start, end + 1)); } catch (e) { return null; }
 }
 
-// Приводим сбалансированный JSON к списку вызовов инструментов
-function parseActions(text) {
+// Приводим сбалансированный JSON к списку вызовов инструментов. tools — набор этой задачи
+// (с /skript, /study и встроенными навыками), иначе их действия отбрасывались бы.
+function parseActions(text, tools = TOOLS) {
   const obj = extractJsonBlock(text);
   if (!obj) return [];
   const list = Array.isArray(obj) ? obj : Array.isArray(obj.actions) ? obj.actions : (obj.tool || obj.name || obj.function) ? [obj] : [];
-  const names = new Set(TOOLS.map((x) => x.function.name));
+  const names = new Set(tools.map((x) => x.function.name));
   return list.map((a, i) => {
     const name = a.tool || a.name || a.function?.name || a.action;
     let args = a.args || a.arguments || a.parameters || a.input || a.function?.arguments || {};
@@ -2108,7 +2134,7 @@ async function executeTool(name, args, st, s) {
     }
 
     case 'query_dom': {
-      const r = await page(tab, 'queryDom', [args.selector, Math.min(100, args.limit || 30), args.attrs || []]);
+      const r = await page(tab, 'queryDom', [args.selector, clampLimit(args.limit), args.attrs || []]);
       if (!r.ok) return fail(r.error);
       if (!r.total) return { text: 'No matches. Try dom_hints to discover selectors.' };
       return { text: clip(JSON.stringify(r), 7000) };
@@ -2123,7 +2149,7 @@ async function executeTool(name, args, st, s) {
       const wait = 800 - (Date.now() - st.lastFetchAt);
       if (wait > 0) await sleep(wait); // вежливый темп, чтобы не словить антибот
       st.lastFetchAt = Date.now();
-      const r = await page(tab, 'fetchSame', [args.url, args.selector || null, Math.min(100, args.limit || 30), args.attrs || [], args.format || 'text', 6000]);
+      const r = await page(tab, 'fetchSame', [args.url, args.selector || null, clampLimit(args.limit), args.attrs || [], args.format || 'text', 6000]);
       const out = { text: clip(JSON.stringify(r), 7000) };
       if (!r.ok) out.error = true;
       return out;
@@ -2327,7 +2353,7 @@ async function runTask() {
     compact,
     skript: skript ? { host, pageUrl: taskUrl } : null,
     tools: (skript ? [...SkriptMode.tools(TOOLS), ...SkriptRun.tools(), ...(study ? SkriptStudy.tools() : [])] : TOOLS).filter((t) => (cfg.observeMode !== 'image' || imageTools.has(t.function.name) || skriptOwn.has(t.function.name)) &&
-      (!compact || COMPACT_TOOLS.has(t.function.name)))
+      (!compact || COMPACT_TOOLS.has(t.function.name) || skriptOwn.has(t.function.name)))   // компактный режим режет только базовые
   };
   // Встроенные навыки сайта (SkriptBuiltin): подсказка в промпт и проверенные инструменты расширения.
   // До try: падение здесь оставило бы панель в «работаю» навсегда (finally не выполнится) — поэтому мягко.
@@ -2441,7 +2467,7 @@ async function runTask() {
           try {
             const r = await callLLM(cfg, messages, abortCtl.signal, st, effortFor(cfg.think, step, st.hadProblem));
             if (cfg.toolMode === 'auto' && st.mode === 'native' && step === 1 &&
-                !r.msg.tool_calls?.length && !parseActions(r.msg.content).length) {
+                !r.msg.tool_calls?.length && !parseActions(r.msg.content, st.tools).length) {
               switchToJson();
               continue;
             }
@@ -2480,7 +2506,7 @@ async function runTask() {
       const viaNative = !!msg.tool_calls?.length;
       const calls = viaNative
         ? msg.tool_calls.map((c) => ({ id: c.id, name: c.function.name, args: safeJson(c.function.arguments) }))
-        : parseActions(msg.content);
+        : parseActions(msg.content, st.tools);
       g.msgs.push(viaNative
         ? { role: 'assistant', content: msg.content ?? null, tool_calls: msg.tool_calls }
         : { role: 'assistant', content: msg.content || '' });
@@ -2686,8 +2712,8 @@ async function checkUpdates(force = false) {
     if (running) { status('Дождитесь конца задачи или остановите её.', true); return; }
     $('ucUpdate').disabled = true;
     try {
-      const n = await SelfUpdate.update(u, chrome.runtime.getManifest(), { onStep: (t) => status(t) });
-      status(`Готово: ${n} файлов, версия ${u.version}. Перезапускаю…`);
+      const r = await SelfUpdate.update(u, chrome.runtime.getManifest(), { onStep: (t) => status(t) });
+      status(`Готово: ${r.files} файлов${r.removed ? `, удалено старых: ${r.removed}` : ''}, версия ${u.version}. Перезапускаю…`);
       setTimeout(() => chrome.runtime.reload(), 700);
     } catch (e) {
       status(e.name === 'AbortError' ? 'Папка не выбрана.' : e.message, true);   // отмена выбора папки — AbortError

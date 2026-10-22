@@ -159,6 +159,13 @@
     {
       const sig = (el) => `${el.tagName}.${String(el.getAttribute('class') || '').trim().split(/\s+/)[0] || ''}`;
       const cards = new Set();
+      // родитель → число детей по подписи: считается один раз, а не для каждой цены на каждом из 9 предков
+      const sigCount = new Map();
+      const twinsOf = (parent, node) => {
+        let m = sigCount.get(parent);
+        if (!m) { m = new Map(); for (const c of parent.children) { const k = sig(c); m.set(k, (m.get(k) || 0) + 1); } sigCount.set(parent, m); }
+        return m.get(sig(node)) || 0;
+      };
       let scanned = 0;
       for (const el of doc.querySelectorAll('body *')) {
         if (++scanned > 8000) break;
@@ -166,8 +173,7 @@
         let node = el;
         for (let up = 0; up < 9 && node && node.parentElement; up++, node = node.parentElement) {
           const parent = node.parentElement;
-          const twins = [...parent.children].filter((c) => sig(c) === sig(node));
-          if (twins.length >= 3 && node.querySelector('a[href]')) { cards.add(node); break; }
+          if (twinsOf(parent, node) >= 3 && node.querySelector('a[href]')) { cards.add(node); break; }
         }
       }
       for (const card of cards) {

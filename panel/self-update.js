@@ -96,6 +96,17 @@ const SelfUpdate = (() => {
     await w.close();
   }
 
+  async function removeFile(root, path) {
+    const parts = path.split('/');
+    let dir = root;
+    for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p);
+    await dir.removeEntry(parts[parts.length - 1]);
+  }
+
+  // Список того, что записало прошлое обновление, — в самой папке: так он всегда про эту папку.
+  // Удаляется только из этого списка: файлы, которые человек положил сам, не трогаем.
+  const RECORD = '.crawler-update.json';
+
   // Получить папку: сохранённую (с разрешением на запись) или выбрать заново. Вызывать по нажатию кнопки.
   async function folder(running) {
     let dir = await loadHandle();
@@ -112,7 +123,7 @@ const SelfUpdate = (() => {
   }
 
   // Обновление: { zipUrl, version } из Updates.check; running — chrome.runtime.getManifest(); fetch — для тестов.
-  // Возвращает число записанных файлов. Перезапуск расширения — за вызывающим.
+  // Возвращает { files, removed }: сколько записано и сколько старых удалено. Перезапуск расширения — за вызывающим.
   async function update({ zipUrl, version }, running, { fetch: f = fetch, onStep = () => {}, dir = null } = {}) {
     const target = dir || await folder(running);               // папку — сразу, пока жест пользователя «свежий»
     onStep('Скачиваю…');
@@ -128,9 +139,19 @@ const SelfUpdate = (() => {
     // manifest.json — последним: если запись оборвётся, папка останется «старой версии» по манифесту
     const order = [...files.keys()].sort((a, b) => (a === 'manifest.json') - (b === 'manifest.json'));
     for (const path of order) await writeFile(target, path, files.get(path));
-    return files.size;
+    // файлы прошлой версии, которых в новой нет (переименованные/удалённые модули), — убрать
+    let prev = [];
+    try { prev = JSON.parse(await readText(target, RECORD) || '{}').files || []; } catch (e) { /* нет списка — первое обновление */ }
+    let removed = 0;
+    for (const path of prev) {
+      if (typeof path !== 'string' || files.has(path) || path === 'manifest.json' || path === RECORD ||
+        path.startsWith('/') || path.split('/').some((x) => x === '..' || x === '' || x === '.git')) continue;
+      try { await removeFile(target, path); removed++; } catch (e) { /* уже нет — и ладно */ }
+    }
+    await writeFile(target, RECORD, JSON.stringify({ version: m.version, files: [...files.keys()] }));
+    return { files: files.size, removed };
   }
 
-  return { update, unzip, stripRoot, checkFolder, writeFile };
+  return { update, unzip, stripRoot, checkFolder, writeFile, RECORD };
 })();
 if (typeof module !== 'undefined') module.exports = SelfUpdate;

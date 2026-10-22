@@ -55,7 +55,8 @@ function memDir(files = {}, dirs = []) {
         getFile: async () => ({ text: async () => (typeof files[p] === 'string' ? files[p] : dec.decode(files[p])) }),
         createWritable: async () => ({ write: async (d) => { files[p] = d; writes.push(p); }, close: async () => {} })
       };
-    }
+    },
+    async removeEntry(n) { const p = prefix + n; if (!(p in files)) throw new Error('NotFound'); delete files[p]; }
   });
   return { root: mk(''), files, writes };
 }
@@ -93,11 +94,22 @@ const manifest = (v) => JSON.stringify({ name: 'Chrome crawler', version: v, hom
     const steps = [];
     const fetch = async (url) => { assert.equal(url, 'https://codeload.github.com/ir00nman/chrome-crawler/zip/refs/heads/main'); return { ok: true, arrayBuffer: async () => zip.buffer }; };
     const n = await S.update({ zipUrl: 'https://codeload.github.com/ir00nman/chrome-crawler/zip/refs/heads/main', version: '0.7.2' }, running, { fetch, dir: d.root, onStep: (s) => steps.push(s) });
-    assert.equal(n, 3);
-    assert.equal(d.writes[d.writes.length - 1], 'manifest.json', 'манифест записан последним');
+    assert.deepEqual({ ...n }, { files: 3, removed: 0 }, 'первое обновление: списка прошлого нет — ничего не удаляем');
+    assert.equal(d.writes.filter((p) => p !== S.RECORD).pop(), 'manifest.json', 'манифест записан последним из файлов архива');
+    assert.deepEqual(JSON.parse(d.files[S.RECORD]).files.sort(), ['README.md', 'manifest.json', 'panel/sidepanel.js'], 'список записанного сохранён в папке');
     assert.match(dec.decode(d.files['panel/sidepanel.js']), /новая панель/);
     assert.match(dec.decode(d.files['manifest.json']), /0\.7\.2/);
     assert.deepEqual(steps, ['Скачиваю…', 'Распаковываю…', 'Записываю 3 файлов…']);
+  }
+  // ---- 4. Следующее обновление удаляет файлы прошлой версии, которых нет в новой; чужие файлы не трогает ----
+  {
+    const d = memDir({ 'manifest.json': manifest('0.7.1'), 'panel/old.js': 'x', 'panel/sidepanel.js': 'x', 'my-notes.txt': 'моё',
+      [S.RECORD]: JSON.stringify({ files: ['manifest.json', 'panel/old.js', 'panel/sidepanel.js', '../evil', 'README.md'] }) });
+    const r = await S.update({ zipUrl: 'z', version: '0.7.2' }, running, { fetch: async () => ({ ok: true, arrayBuffer: async () => zip.buffer }), dir: d.root });
+    assert.deepEqual({ ...r }, { files: 3, removed: 1 });
+    assert.ok(!('panel/old.js' in d.files), 'старый модуль удалён');
+    assert.equal(d.files['my-notes.txt'], 'моё', 'файл человека не тронут');
+    assert.ok('panel/sidepanel.js' in d.files && 'README.md' in d.files, 'актуальные файлы на месте');
   }
   // в архиве не та версия (GitHub ещё не обновил архив) — ничего не пишем
   {

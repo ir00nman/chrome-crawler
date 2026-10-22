@@ -120,6 +120,10 @@ function makeCtx() {
   }
   assert.equal(g('navigate', { url: '/cart' }).ok, true, 'same-origin: относительный путь можно');
   assert.equal(g('navigate', { url: 'https://shop.com/cart' }).ok, true, 'same-origin: свой хост можно');
+  assert.ok(g('navigate', { url: 'http://shop.com/cart' }).denied, 'same-origin: другая схема — чужой origin');
+  assert.ok(g('navigate', { url: 'https://shop.com:8443/cart' }).denied, 'same-origin: другой порт — чужой origin');
+  assert.equal(g('navigate', { url: 'https://shop.com:443/cart' }).ok, true, 'same-origin: порт по умолчанию — свой');
+  assert.equal(g('navigate', { url: '//shop.com/cart' }).ok, true, 'same-origin: ссылка без схемы — свой');
   await M.setGrant('nav', 'any', false);
   assert.equal(g('navigate', { url: 'https://evil.com/x' }).ok, true, 'nav=any: можно');
   assert.ok(g('navigate', { url: 'https://paypal.com/x' }).denied, 'nav=any не снимает запрет чувствительных доменов');

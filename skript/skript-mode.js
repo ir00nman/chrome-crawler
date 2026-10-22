@@ -106,9 +106,11 @@ function skriptGate(action) {
   const args = action.args || {};
 
   if (name === 'navigate' && args.url && skriptState.grants && skriptState.grants.nav === 'same-origin') {
-    let target = null;
+    // Свой сайт — тот же origin (схема + хост + порт), а не только имя хоста: http:// и :8443 — уже чужие
+    let target = null, origin = '';
     try { target = new URL(String(args.url), action.pageUrl || (host ? 'https://' + host : undefined)); } catch (e) {}
-    if (!target || target.hostname !== host) {
+    try { origin = new URL(action.pageUrl).origin; } catch (e) { origin = host ? 'https://' + host : ''; }
+    if (!target || target.hostname !== host || target.origin !== origin) {
       return { denied: true, cls: 'R1', text: 'Blocked: navigation is limited to the current site (access grant). Choose another approach or finish.' };
     }
   }

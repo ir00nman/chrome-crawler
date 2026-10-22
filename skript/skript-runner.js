@@ -111,6 +111,7 @@ function skriptPageSide(NONCE, L, DRY, ARGS, USER, GRID) {
       let on = true, handle = 0, frames = 0, t0 = NOW();
       const cancel = () => { on = false; CT(handle); S.timers.delete(handle); S.loops.delete(cancel); maybeFinish(); };
       const tick = async () => {
+        S.timers.delete(handle);                    // сработавший таймер — не копим: при 60 fps за 5 минут это ~18 000 id
         if (!on || S.stopped) return;
         const t = NOW();
         try { await fn(); S.errs = 0; }

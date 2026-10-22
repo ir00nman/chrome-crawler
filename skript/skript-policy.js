@@ -14,36 +14,77 @@
  * `rect.top + 1` и `el.style.top` (навигация?).
  */
 
-// Вырезаем строковые/шаблонные литералы и комментарии, оставляя код.
+// Вырезаем строковые литералы, регулярки и комментарии, оставляя код. Выражения ${…} в шаблонах — это код:
+// они остаются (иначе `${fetch(…)}` прятался в «строке»). Регулярка отличается от деления по предыдущему
+// токену: кавычка внутри /["']/ раньше открывала «строку» и вырезала весь остальной код.
 function skriptStrip(src) {
-  let out = '';
   let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const n = src[i + 1];
-    if (c === '/' && n === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
-    if (c === '/' && n === '*') {
-      i += 2;
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') {
-      const q = c;
-      out += '""';
-      i++;
-      while (i < src.length && src[i] !== q) {
-        if (src[i] === '\\') i++;
-        if (src[i] === '\n') break; // незакрытая строка — не наш случай, но зацикливаться нельзя
-        i++;
+  // после этого кода «/» начинает регулярку, а не деление
+  const regexAllowed = (out) => {
+    const t = out.replace(/\s+$/, '');
+    if (!t) return true;
+    const ch = t[t.length - 1];
+    if (/[\w$]/.test(ch)) return /(?:^|[^\w$])(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.test(t);
+    if (ch === ')' || ch === ']' || ch === '"') return false;          // (a) / 2, x[1] / 2, "" / 2
+    if ((ch === '+' || ch === '-') && t[t.length - 2] === ch) return false;   // a++ / 2
+    return true;
+  };
+  // code: до конца или до непарной «}» (тело ${…}); возвращает вырезанный код
+  const code = (inTemplate) => {
+    let out = '', depth = 0;
+    while (i < src.length) {
+      const c = src[i], n = src[i + 1];
+      if (c === '/' && n === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+      if (c === '/' && n === '*') {
+        i += 2;
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+        i += 2;
+        continue;
       }
+      if (c === '"' || c === "'") {
+        out += '""';
+        i++;
+        while (i < src.length && src[i] !== c && src[i] !== '\n') i += src[i] === '\\' ? 2 : 1;
+        i++;
+        continue;
+      }
+      if (c === '`') { i++; out += template(); continue; }
+      if (c === '/' && regexAllowed(out)) {
+        i++;
+        let cls = false;
+        while (i < src.length && src[i] !== '\n') {
+          if (src[i] === '\\') { i += 2; continue; }
+          if (cls) { if (src[i] === ']') cls = false; }
+          else if (src[i] === '[') cls = true;
+          else if (src[i] === '/') break;
+          i++;
+        }
+        i++;
+        while (i < src.length && /[a-z]/i.test(src[i])) i++;      // флаги
+        out += '""';
+        continue;
+      }
+      if (inTemplate) {
+        if (c === '{') depth++;
+        else if (c === '}') { if (depth === 0) { i++; return out; } depth--; }
+      }
+      out += c;
       i++;
-      continue;
     }
-    out += c;
-    i++;
-  }
-  return out;
+    return out;
+  };
+  // шаблон после открывающей «`»: текст выкидываем, ${выражения} оставляем как код
+  const template = () => {
+    let out = '""';
+    while (i < src.length) {
+      if (src[i] === '\\') { i += 2; continue; }
+      if (src[i] === '`') { i++; return out; }
+      if (src[i] === '$' && src[i + 1] === '{') { i += 2; out += '+(' + code(true) + ')+""'; continue; }
+      i++;
+    }
+    return out;
+  };
+  return code(false);
 }
 
 // Заменяем составные операторы на пробелы, чтобы одиночный `=` в `a = 1`
@@ -85,7 +126,25 @@ const R_NET = [
   // Обходы по имени: строки вырезаются заранее, поэтому window["fetch"]() иначе проходит.
   { re: /\b(?:window|globalThis|self|top|parent|frames)\s*\[/, why: 'доступ к глобальному объекту по ключу' },
   { re: /\.\s*constructor\b|\[\s*""\s*\]\s*\(/, why: 'constructor/вызов по строковому ключу (обход запретов)' },
-  { re: /\]\s*\(/, why: 'вызов элемента по ключу или индексу' }
+  { re: /\]\s*\(/, why: 'вызов элемента по ключу или индексу' },
+  // Обходы через ссылку на глобальный объект или сетевую функцию: const f = fetch; this["fe"+"tch"]; Reflect.get(…)
+  { re: /(?:^|[^\w$.])fetch\b/, why: 'ссылка на fetch' },
+  { re: /\bthis\b(?!\s*\.)/, why: 'this вне обращения к свойству (может быть глобальным объектом)' },
+  { re: /(?:^|[^\w$.])(?:window|globalThis|self|frames)\b(?!\s*\.)/, why: 'ссылка на глобальный объект целиком' },
+  { re: /\bReflect\s*\./, why: 'Reflect' },
+  { re: /\bimport\s*\(/, why: 'динамический import' },
+  { re: /\bnew\s+(?:Image|Audio|Video|Worker|SharedWorker|Request|WebSocket|EventSource)\b/, why: 'объект, загружающий внешний ресурс' },
+  // Без сетевых функций данные уходят через DOM: картинка/фрейм с адресом, разметка с адресом, открытие окна.
+  { re: /\.\s*(?:src|srcset|poster|formAction)\s*=(?!=)/, why: 'присваивание адреса ресурса (src/srcset/…)' },
+  { re: /[{,]\s*(?:src|srcset|poster|formAction)\s*:/, why: 'адрес ресурса в объекте (Object.assign(img, { src }))' },
+  { re: /\.\s*(?:innerHTML|outerHTML)\s*=(?!=)|\binsertAdjacentHTML\s*\(|\bdocument\s*\.\s*write/, why: 'вставка HTML-разметки (выводите через textContent)' },
+  { re: /\bwindow\s*\.\s*open\s*\(|(?:^|[^\w$.])open\s*\(/, why: 'window.open' }
+];
+
+// Правила по исходнику (строки ещё на месте): адрес в атрибуте или в CSS url(…) — тоже загрузка ресурса.
+const R_RAW = [
+  { re: /\bsetAttribute\s*\(\s*[`'"]\s*(?:src|srcset|href|poster|data|action|formaction|background|style)\s*[`'"]/i, why: 'setAttribute с адресом ресурса' },
+  { re: /url\s*\(\s*[`'"]?\s*(?:https?:)?\/\/|@import/i, why: 'CSS url() с внешним адресом' }
 ];
 
 // Побочные эффекты и потенциально опасные конструкции — для readonly.
@@ -100,7 +159,7 @@ const R_SIDE = [
   { re: /\b(?:setTimeout|setInterval|requestAnimationFrame|queueMicrotask)\s*\(/, why: 'планировщик' },
   { re: /\bdocument\s*\.\s*(?:write|execCommand|createElement|writeln)\b/, why: 'запись в document' },
   { re: /\bwindow\s*\.\s*open\s*\(/, why: 'window.open' },
-  { re: /(?:^|[^\w$])(?:location|top|parent|opener)\s*=(?!=)/, why: 'присваивание навигационного объекта' },
+  { re: /(?:^|[^\w$.])(?:location|top|parent|opener)\s*=(?!=)/, why: 'присваивание навигационного объекта' },
   // Навигация — только через location (и присваивание href). Раньше ловили любой .replace(/.assign(:
   // живой прогон 2048 — str.replace() и Object.assign() отклонялись как «метод навигации», модель ушла кликать.
   { re: SKRIPT_LOCATION_RE, why: 'обращение к location (можно только читать location.href/pathname/search/hash/host/origin)' },
@@ -124,7 +183,7 @@ const R_RUN = [
   { re: /\bsetTimeout\s*\(|\bsetInterval\s*\(|\brequestAnimationFrame\s*\(|\bqueueMicrotask\s*\(/, why: 'свой планировщик (раннер управляет циклом)' },
   { re: /\bwindow\s*\.\s*open\s*\(/, why: 'window.open' },
   { re: /\bdocument\s*\.\s*write\b/, why: 'document.write' },
-  { re: /(?:^|[^\w$])(?:location|top|parent|opener)\s*=(?!=)/, why: 'самостоятельная навигация' },
+  { re: /(?:^|[^\w$.])(?:location|top|parent|opener)\s*=(?!=)/, why: 'самостоятельная навигация' },
   // Навигация — только через location (и присваивание href). Раньше ловили любой .replace(/.assign(:
   // живой прогон 2048 — str.replace() и Object.assign() отклонялись как «метод навигации», модель ушла кликать.
   { re: SKRIPT_LOCATION_RE, why: 'обращение к location (можно только читать location.href/pathname/search/hash/host/origin)' },
@@ -154,6 +213,10 @@ function skriptLint(code, profile = 'readonly') {
   if (src.length > 8000) return skriptLintIssue('слишком длинный код', src);
   const norm = skriptNormalize(skriptStrip(src));
   const rules = SKRIPT_PROFILES[profile] || SKRIPT_PROFILES.readonly;
+  for (const r of R_RAW) {
+    const m = r.re.exec(src);
+    if (m) return skriptLintIssue(r.why, src, src.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim());
+  }
   for (const r of rules) {
     const m = r.re.exec(norm);
     if (m) return skriptLintIssue(r.why, src, norm.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).trim());

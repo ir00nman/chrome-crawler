@@ -147,6 +147,9 @@ function skriptCreateDrafts() {
       return { ok: true, id: d.id, version: d.version };
     },
     approve(id) { const d = pick(id); if (!d) return false; d.approved = true; return true; },
+    // «Сохранить для сайта»: черновик запоминает запись в библиотеке и сохранённый код — следующий запуск
+    // покажет «Сохранено» и обновит ту же запись, а не создаст дубль
+    markSaved(id, savedId, code) { const d = pick(id); if (!d) return false; d.savedId = savedId; d.adoptedCode = code; return true; },
     // «Починить»: скрипт из прошлой задачи или библиотеки становится черновиком этой задачи (правки — patch_script).
     adopt({ title, description, code, goal, savedId, version } = {}) {
       const c = check(code);

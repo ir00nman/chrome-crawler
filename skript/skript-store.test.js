@@ -52,6 +52,10 @@ async function main() {
  const { skill: v2b } = await S().save({ ...base({ title:'Новое имя' }), id: skill.id, code: v2.code });
  assert.equal(v2b.version,2, 'версия не растёт при смене заголовка');
  assert.equal(v2b.title,'Новое имя', 'заголовок обновился');
+ const { skill: v2c } = await S().save({ ...base(), id: skill.id, code: v2.code, risk: 'R2', returns: 'счёт', params: { type:'object', properties:{ n:{ type:'integer' } }, required:[] } });
+ assert.ok(v2c.version === 2 && v2c.risk === 'R2' && v2c.returns === 'счёт' && v2c.params.properties.n, 'тот же код: risk/returns/params обновились');
+ const { skill: v2d } = await S().save({ title: v2c.title, kind: v2c.kind, code: v2.code, permissions: v2c.permissions, scope: { origin: v2c.scope.origin }, id: skill.id });
+ assert.ok(v2d.risk === 'R2' && v2d.params.properties.n, 'не переданные метаданные не затираются');
 
  // ----3. Подмена кода в хранилище → get возвращает stale + warning ----
  const all = ctx.__data.skriptLibrary;

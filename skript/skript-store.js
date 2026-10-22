@@ -180,6 +180,17 @@ const SkriptStore = {
  tags: skill.tags || prev.tags, enabled: skill.enabled !== false,
  stats: prev.stats
  });
+ // остальные метаданные — только переданные: чего нет в запросе, то не затираем
+ if (skill.params) prev.params = skill.params;
+ if (skill.returns !== undefined) prev.returns = String(skill.returns || '').slice(0,200);
+ if (skill.risk) prev.risk = skill.risk;
+ if (skill.preconditions) prev.preconditions = skill.preconditions;
+ if (skill.fingerprint) prev.fingerprint = skill.fingerprint;
+ if (skill.tests) prev.tests = skill.tests.slice(0,5);
+ if (skill.author) prev.author = skill.author;
+ if (skill.status && SKRIPT_STATUS.includes(skill.status)) prev.status = skill.status;
+ if (skill.scope && skill.scope.pathPrefix !== undefined) prev.scope = { ...prev.scope, pathPrefix: skill.scope.pathPrefix || '' };
+ if (skill.scope && skill.scope.frame !== undefined) prev.scope = { ...prev.scope, frame: skill.scope.frame || '' };
  await this._writeAll(all);
  return { skill: prev, warning };
  }

@@ -68,30 +68,51 @@
   // ---------- Цели ----------
   // Кандидаты: заметные элементы в видимой области. Крупные виды — картинки и карточки в приоритете,
   // «щупальца» (smooth) — любые «читаемые»: заголовки, цены, короткий текст.
+  // Геометрия одного элемента: куда хвататься, или null — мелкий, огромный или за экраном.
+  function measure(el, big) {
+    const W = innerWidth, H = innerHeight;
+    if (!el.isConnected) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < (big ? 40 : 24) || r.height < (big ? 22 : 10) || r.width > W * (big ? 0.75 : 0.7) || r.height > H * (big ? 0.6 : 0.5)) return null;
+    if (r.bottom < 8 || r.top > H - 8 || r.right < 8 || r.left > W - 40) return null;
+    const x0 = Math.max(4, r.left), y0 = Math.max(4, r.top);
+    const g = { x: x0, y: y0, w: Math.min(GRAB_W, Math.min(W - 4, r.right) - x0), h: Math.min(GRAB_H, Math.min(H - 4, r.bottom) - y0) };
+    if (g.w < 24 || g.h < 10) return null;
+    return { rect: g, at: { x: r.left, y: r.top } };
+  }
+  // Полный обход страницы дорогой (селектор + замер до 300 элементов), а цели меняются редко:
+  // список держится CAND_TTL, свой для каждого вида; свежая геометрия — только у выбранных (pick).
+  const CAND_TTL = 900;
+  const candCache = { true: null, false: null };
   function candidates(big) {
-    const W = innerWidth, H = innerHeight, out = [];
+    const hit = candCache[big];
+    if (hit && performance.now() - hit.t < CAND_TTL) return hit.list;
+    const out = [];
     const els = document.querySelectorAll('h1,h2,h3,h4,img,picture,video,figure,article,li,[class*="card" i],[class*="price" i],[class*="title" i],a,p,button,label');
     for (const el of els) {
       if (!/^(IMG|PICTURE|VIDEO|FIGURE)$/.test(el.tagName) && !(el.textContent || '').trim()) continue;
       if (el.children.length > (big ? 12 : 4)) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width < (big ? 40 : 24) || r.height < (big ? 22 : 10) || r.width > W * (big ? 0.75 : 0.7) || r.height > H * (big ? 0.6 : 0.5)) continue;
-      if (r.bottom < 8 || r.top > H - 8 || r.right < 8 || r.left > W - 40) continue;
-      const x0 = Math.max(4, r.left), y0 = Math.max(4, r.top);
-      const g = { x: x0, y: y0, w: Math.min(GRAB_W, Math.min(W - 4, r.right) - x0), h: Math.min(GRAB_H, Math.min(H - 4, r.bottom) - y0) };
-      if (g.w < 24 || g.h < 10) continue;
-      out.push({ el, rect: g, at: { x: r.left, y: r.top }, w: big ? (0.4 + Math.random() * 0.6) * Math.sqrt(g.w * g.h) : Math.random() });
+      const m = measure(el, big);
+      if (!m) continue;
+      out.push({ el, ...m, w: big ? (0.4 + Math.random() * 0.6) * Math.sqrt(m.rect.w * m.rect.h) : Math.random() });
       if (out.length > 300) break;
     }
-    return out.sort((a, b) => b.w - a.w);
+    out.sort((a, b) => b.w - a.w);
+    candCache[big] = { t: performance.now(), list: out };
+    return out;
   }
   const overlaps = (a, b, pad) => a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad;
   // n целей, не налезающих на занятые
   function pick(n, busy) {
     const out = [];
-    for (const c of candidates(STYLES[style].big)) {
-      if (busy.some((b) => b.el === c.el || overlaps(c.rect, b.rect, 16)) || out.some((o) => overlaps(c.rect, o.rect, 16))) continue;
-      if (recent.includes(c.el) && Math.random() < 0.85) continue;
+    const big = STYLES[style].big;
+    for (const cached of candidates(big)) {
+      if (busy.some((b) => b.el === cached.el || overlaps(cached.rect, b.rect, 16)) || out.some((o) => overlaps(cached.rect, o.rect, 16))) continue;
+      if (recent.includes(cached.el) && Math.random() < 0.85) continue;
+      const m = measure(cached.el, big);                              // список мог устареть: прокрутка, перерисовка
+      if (!m) continue;
+      const c = { ...cached, ...m };
+      if (busy.some((b) => overlaps(c.rect, b.rect, 16)) || out.some((o) => overlaps(c.rect, o.rect, 16))) continue;
       out.push(c);
       if (out.length >= n) break;
     }

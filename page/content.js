@@ -365,7 +365,7 @@
   function extractFrom(root, selector, limit, attrs) {
     let nodes;
     try { nodes = [...root.querySelectorAll(selector)]; } catch (e) { return { ok: false, error: 'Bad selector: ' + e.message }; }
-    const items = nodes.slice(0, limit).map((n, i) => {
+    const items = nodes.slice(0, Math.max(1, Math.min(100, Math.floor(Number(limit)) || 30))).map((n, i) => {
       const a = n.matches('a[href]') ? n : (n.querySelector('a[href]') || n.closest('a[href]'));
       const o = { i: i + 1, text: clean(n.innerText ?? n.textContent).slice(0, 300) };
       if (a) o.href = a.getAttribute('href');

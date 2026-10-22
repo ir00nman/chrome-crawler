@@ -29,6 +29,7 @@ const SKRIPT_CONTRACT_API = [
 // Какие конструкции отклоняет статическая проверка (профиль run) — модели нужно знать заранее.
 const SKRIPT_CONTRACT_RULES = [
   'No network (fetch, XMLHttpRequest, WebSocket, sendBeacon), no cookies/localStorage/sessionStorage/indexedDB, no chrome.* APIs.',
+  'No loading of external resources: no .src/.srcset assignments, new Image/Audio/Worker, innerHTML/insertAdjacentHTML, CSS url(…), window.open, import(). Show text with textContent. Do not reference window/globalThis/this as a whole value or via Reflect.',
   'No eval / new Function / .constructor, no setTimeout/setInterval/requestAnimationFrame (use __crawler.loop and __crawler.wait).',
   'No navigation (location=, window.open, history.*), no assignment to window/document/location properties.',
   'No computed access to globals (window["x"], globalThis[k]) and no calls through a key or index (handlers[name](), fns[0]()): call functions by plain name.',

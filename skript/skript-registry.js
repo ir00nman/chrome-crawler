@@ -13,11 +13,17 @@ const SkriptRegistry = {
  const origin = u.origin;
  return (skills || []).filter((s) =>
  s.scope.origin === origin &&
- (!s.scope.pathPrefix || u.pathname.startsWith(s.scope.pathPrefix)) &&
+ SkriptRegistry.pathMatches(s.scope.pathPrefix, u.pathname) &&
  s.enabled !== false &&
  s.status !== 'untrusted' &&
  s.status !== 'stale'
  );
+ },
+
+ // pathPrefix — по границе сегмента: «/editor» подходит к /editor и /editor/1, но не к /editorial
+ pathMatches(prefix, path) {
+ if (!prefix) return true;
+ return path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : prefix + '/');
  },
 
  // Дешёвые проверки без модели: существуют ли селекторы и глобалы из fingerprint.
